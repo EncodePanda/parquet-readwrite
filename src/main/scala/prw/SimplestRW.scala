@@ -1,16 +1,25 @@
 package prw
 
+import java.net.URI
+import org.apache.hadoop.fs.FileSystem
 import org.apache.hadoop.fs.Path
 import org.apache.hadoop.conf.Configuration
+import org.apache.hadoop.util.ReflectionUtils
+import org.apache.hadoop.mapred.FileSplit
+import org.apache.hadoop.mapred.InputFormat
+import org.apache.hadoop.mapred.InputSplit
 import org.apache.parquet.example.data._
 import org.apache.parquet.example.data.simple.SimpleGroupFactory
 import org.apache.parquet.hadoop._
 import org.apache.parquet.hadoop.example._
 import org.apache.parquet.schema.MessageTypeParser
 import org.apache.parquet.column.ParquetProperties
+import org.apache.hadoop.mapred.Reporter
 
 trait Consts {
-  val path = new Path("hdfs://localhost:9000/data1.parquet")
+  val path = new Path("hdfs://localhost:9000/data3.parquet")
+  val noOfRows = 100000
+  val blockSize = 1048576
 }
 
 object SimplestWrite extends App with Consts {
@@ -25,13 +34,13 @@ object SimplestWrite extends App with Consts {
 
   val groupFactory = new SimpleGroupFactory(schema)
 
-  val groups: List[Group] = (1 to 1000000).toList.map { id =>
+  val groups: List[Group] = (1 to noOfRows).toList.map { id =>
     groupFactory.newGroup()
       .append("id", id.toLong)
       .append("login", s"login$id")
       .append("age", (id + 10) % 50)
   }
-  val blockSize = 2*1024*1024
+
 
   val conf = new Configuration()
   conf.set( "dfs.block.size", blockSize.toString)
@@ -59,4 +68,32 @@ object SimplestRead extends App with Consts {
   val reader = new ParquetReader[Group](path, readSupport)
   val result: Group = reader.read()
   println(result)
+}
+
+trait FromSpark {
+
+}
+
+object BlockRead extends App with Consts with FromSpark {
+  val conf: Configuration = new Configuration()
+  val fs: FileSystem = FileSystem.get(new URI("hdfs://localhost:9000"), conf)
+
+  val fileStatus = fs.getFileStatus(path)
+  val blocks = fs.getFileBlockLocations(fileStatus,0,fileStatus.getLen())
+  val splits = blocks.map (b => {
+    new FileSplit(path,b.getOffset(),b.getLength(),b.getHosts())
+  })
+
+  val readSupport = new GroupReadSupport()
+
+  println(s"Number of splits: ${splits.length}")
+
+  splits.foreach { split => {
+    println(s"Next split")
+    val prr = new ParquetRecordReader(readSupport)
+    prr.initialize(split, conf, Reporter.NULL)
+    while(prr.nextKeyValue()) {
+      println(prr.getCurrentValue().getString("login", 0))
+    }
+  }}
 }
